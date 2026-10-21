@@ -440,12 +440,19 @@ export const getSyncRunsPage = async (params?: {
 };
 
 // Schedules
-export const enableSchedule = async (syncDefId: string, config: {
+export interface ScheduleInput {
   schedule_type: 'INTERVAL' | 'CRON';
   interval_seconds?: number;
   cron_expression?: string;
   timezone?: string;
-}) => {
+}
+
+export const previewSchedule = async (config: ScheduleInput): Promise<string[]> => {
+  const res = await api.post('/schedules/preview', config);
+  return res.data;
+};
+
+export const enableSchedule = async (syncDefId: string, config: ScheduleInput) => {
   const res = await api.post(`/schedules/${syncDefId}/enable`, config);
   return res.data;
 };

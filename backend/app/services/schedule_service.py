@@ -1,10 +1,12 @@
 from uuid import UUID
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import select, delete
 from croniter import croniter
 
+from app.core.time import utc_now
 from app.models.core import SyncDefinition, CeleryPeriodicTask
 
 
@@ -24,24 +26,18 @@ class ScheduleService:
         Enable scheduled sync for a sync definition.
         Creates or updates CeleryPeriodicTask.
         """
-        sync_def = self.db.get(SyncDefinition, sync_def_id)
+        sync_def = self.db.get(SyncDefinition, sync_def_id, with_for_update=True)
         if not sync_def:
             raise ValueError("Sync definition not found")
 
-        # Validate schedule
+        # Calculate and validate before changing any persistent objects.
+        next_run = self.preview_schedule(
+            schedule_type, interval_seconds, cron_expression, timezone, count=1
+        )[0]
         if schedule_type == "INTERVAL":
-            if not interval_seconds or interval_seconds < 60:
-                raise ValueError("Interval must be at least 60 seconds")
-        elif schedule_type == "CRON":
-            if not cron_expression:
-                raise ValueError("Cron expression required")
-            # Validate cron
-            try:
-                croniter(cron_expression)
-            except Exception as e:
-                raise ValueError(f"Invalid cron expression: {e}")
+            cron_expression = None
         else:
-            raise ValueError("schedule_type must be INTERVAL or CRON")
+            interval_seconds = None
 
         # Update SyncDefinition
         sync_def.schedule_enabled = True
@@ -49,9 +45,7 @@ class ScheduleService:
         sync_def.schedule_interval_seconds = interval_seconds
         sync_def.schedule_cron_expression = cron_expression
         sync_def.schedule_timezone = timezone
-        sync_def.next_scheduled_run = self._calculate_next_run(
-            schedule_type, interval_seconds, cron_expression, timezone
-        )
+        sync_def.next_scheduled_run = next_run
 
         # Create or update CeleryPeriodicTask
         task_name = f"sync_def_{sync_def_id}_scheduled"
@@ -95,14 +89,14 @@ class ScheduleService:
             periodic_task.crontab_day_of_week = parts[4]
             periodic_task.interval_seconds = None
 
-        periodic_task.date_changed = datetime.utcnow()
+        periodic_task.date_changed = utc_now()
 
         self.db.commit()
-        return {"message": "Schedule enabled", "next_run": sync_def.next_scheduled_run}
+        return {"message": "Schedule enabled", "next_run": next_run}
 
     def disable_schedule(self, sync_def_id: UUID):
         """Disable scheduled sync."""
-        sync_def = self.db.get(SyncDefinition, sync_def_id)
+        sync_def = self.db.get(SyncDefinition, sync_def_id, with_for_update=True)
         if not sync_def:
             raise ValueError("Sync definition not found")
 
@@ -116,14 +110,22 @@ class ScheduleService:
 
         if periodic_task:
             periodic_task.enabled = False
-            periodic_task.date_changed = datetime.utcnow()
+            periodic_task.date_changed = utc_now()
 
         self.db.commit()
         return {"message": "Schedule disabled"}
 
     def delete_schedule(self, sync_def_id: UUID):
         """Completely remove schedule."""
-        self.disable_schedule(sync_def_id)
+        sync_def = self.db.get(SyncDefinition, sync_def_id, with_for_update=True)
+        if not sync_def:
+            raise ValueError("Sync definition not found")
+        sync_def.schedule_enabled = False
+        sync_def.next_scheduled_run = None
+        sync_def.schedule_type = None
+        sync_def.schedule_interval_seconds = None
+        sync_def.schedule_cron_expression = None
+        sync_def.schedule_timezone = "UTC"
 
         task_name = f"sync_def_{sync_def_id}_scheduled"
         stmt = delete(CeleryPeriodicTask).where(CeleryPeriodicTask.name == task_name)
@@ -131,18 +133,51 @@ class ScheduleService:
         self.db.commit()
         return {"message": "Schedule deleted"}
 
+    @staticmethod
+    def preview_schedule(
+        schedule_type: str,
+        interval_seconds: Optional[int] = None,
+        cron_expression: Optional[str] = None,
+        timezone: str = "UTC",
+        *,
+        count: int = 5,
+        now: Optional[datetime] = None,
+    ) -> list[datetime]:
+        """Validate a schedule and return upcoming timezone-aware UTC instants."""
+        if not 1 <= count <= 10:
+            raise ValueError("Preview count must be between 1 and 10")
+        try:
+            zone = ZoneInfo(timezone)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(f"Invalid timezone: {timezone}") from exc
+        now = now or datetime.now(UTC)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=UTC)
+        now = now.astimezone(UTC)
+        if schedule_type == "INTERVAL":
+            if not interval_seconds or not 60 <= interval_seconds <= 2_147_483_647:
+                raise ValueError("Interval must be between 60 and 2147483647 seconds")
+            try:
+                return [now + timedelta(seconds=interval_seconds * i) for i in range(1, count + 1)]
+            except OverflowError as exc:
+                raise ValueError("Interval is too large") from exc
+        if schedule_type != "CRON":
+            raise ValueError("schedule_type must be INTERVAL or CRON")
+        if not cron_expression or len(cron_expression.split()) != 5:
+            raise ValueError("Cron must have 5 parts: minute hour day month day_of_week")
+        try:
+            iterator = croniter(cron_expression, now.astimezone(zone))
+            return [iterator.get_next(datetime).astimezone(UTC) for _ in range(count)]
+        except (ValueError, KeyError, OverflowError) as exc:
+            raise ValueError(f"Invalid cron expression: {exc}") from exc
+
     def _calculate_next_run(
         self,
         schedule_type: str,
         interval_seconds: Optional[int],
         cron_expression: Optional[str],
-        timezone: str
+        timezone: str,
     ) -> datetime:
-        """Calculate next run time."""
-        now = datetime.utcnow()
-
-        if schedule_type == "INTERVAL":
-            return now + timedelta(seconds=interval_seconds)
-        else:  # CRON
-            iter = croniter(cron_expression, now)
-            return iter.get_next(datetime)
+        return self.preview_schedule(
+            schedule_type, interval_seconds, cron_expression, timezone, count=1
+        )[0]

@@ -155,3 +155,9 @@ See [CONTRIBUTING.md](docs/CONTRIBUTING.md) for development guidelines.
 
 ## License
 Proprietary - Arcore Internal Use Only
+
+### Schedule preview and dispatch
+
+The schedule editor previews five upcoming runs in the selected timezone before saving. Cron schedules use standard five-field expressions and IANA timezones. Celery Beat checks persisted schedules every 15 seconds; run one Beat process and workers consuming `default` and `sync_queue`. Restart both after upgrading.
+
+See [review findings and opportunities](docs/REVIEW_FINDINGS.md) for delivery behavior, validation coverage, and follow-up functionality.

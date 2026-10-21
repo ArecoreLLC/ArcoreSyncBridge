@@ -44,3 +44,7 @@ dist/
 # Local
 *.local
 *.log
+
+# Keep frontend source helpers visible despite the Python lib directory rule.
+!frontend/src/lib/
+!frontend/src/lib/**
