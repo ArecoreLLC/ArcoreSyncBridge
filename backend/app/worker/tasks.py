@@ -26,7 +26,7 @@ class SingletonTask(Task):
     """
     def apply_async(self, args=None, kwargs=None, **options):
         # Get sync_def_id from args or kwargs
-        sync_def_id = args[0] if args else kwargs.get('sync_def_id')
+        sync_def_id = args[0] if args else (kwargs or {}).get('sync_def_id')
         lock_key = f"sync_lock:{sync_def_id}"
 
         # Try to acquire lock (non-blocking check)
@@ -255,5 +255,16 @@ def reconcile_single_sync(self, sync_def_id: str):
     except Exception as e:
         logger.exception(f"Failed to reconcile sync {sync_def_id}: {str(e)}")
         raise
+    finally:
+        db.close()
+
+
+@celery_app.task
+def dispatch_sync_schedules():
+    from app.services.schedule_dispatch import dispatch_due_schedules
+
+    db = SessionLocal()
+    try:
+        return dispatch_due_schedules(db, run_scheduled_sync.delay)
     finally:
         db.close()

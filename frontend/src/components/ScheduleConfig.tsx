@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Clock, Calendar, Play, Pause, Trash2 } from 'lucide-react';
-import { enableSchedule, disableSchedule, deleteSchedule, getScheduleAudit } from '../services/api';
+import { previewSchedule, enableSchedule, disableSchedule, deleteSchedule, getScheduleAudit } from '../services/api';
 import { useToast } from './ui/ToastProvider';
 import { useConfirmDialog } from './ui/ConfirmDialogProvider';
 
@@ -27,6 +27,32 @@ export default function ScheduleConfig({ syncDefId, currentConfig, onSave }: Sch
     const [loading, setLoading] = useState(false);
     const [auditLogs, setAuditLogs] = useState<any[]>([]);
     const [showAudit, setShowAudit] = useState(false);
+    const [previewRuns, setPreviewRuns] = useState<string[]>([]);
+    const [previewLoading, setPreviewLoading] = useState(false);
+
+    // Invalidate results and ignore responses for an older configuration.
+    useEffect(() => {
+        let active = true;
+        setPreviewRuns([]);
+        setPreviewLoading(true);
+        const timer = setTimeout(async () => {
+            try {
+                const runs = await previewSchedule({
+                    schedule_type: scheduleType,
+                    ...(scheduleType === 'INTERVAL'
+                        ? { interval_seconds: intervalMinutes * 60 }
+                        : { cron_expression: cronExpression }),
+                    timezone,
+                });
+                if (active) setPreviewRuns(runs);
+            } catch {
+                // Enable validates input and displays the server's error message.
+            } finally {
+                if (active) setPreviewLoading(false);
+            }
+        }, 400);
+        return () => { active = false; clearTimeout(timer); };
+    }, [scheduleType, intervalMinutes, cronExpression, timezone]);
 
     // Initialize from currentConfig
     useEffect(() => {
@@ -34,7 +60,7 @@ export default function ScheduleConfig({ syncDefId, currentConfig, onSave }: Sch
             if (currentConfig.schedule_type === 'CRON') {
                 setScheduleType('CRON');
                 setCronExpression(currentConfig.schedule_cron_expression || '0 0 * * *');
-            } else if (currentConfig.schedule_type === 'INTERVAL') {
+            } else {
                 setScheduleType('INTERVAL');
                 setIntervalMinutes(Math.floor((currentConfig.schedule_interval_seconds || 300) / 60));
             }
@@ -258,6 +284,17 @@ export default function ScheduleConfig({ syncDefId, currentConfig, onSave }: Sch
                         <option value="Europe/London">Europe/London</option>
                         <option value="Asia/Tokyo">Asia/Tokyo</option>
                     </select>
+                </div>
+
+                <div className="mb-6 text-sm" aria-live="polite">
+                    <h4 className="font-medium">Upcoming runs ({timezone})</h4>
+                    {previewLoading ? <p>Calculating preview...</p> : previewRuns.length ? (
+                        <ol className="mt-2 space-y-1">
+                            {previewRuns.map((run) => (
+                                <li key={run}>{new Date(run).toLocaleString(undefined, { timeZone: timezone, timeZoneName: 'short' })}</li>
+                            ))}
+                        </ol>
+                    ) : <p>Enter a valid schedule to preview upcoming runs.</p>}
                 </div>
 
                 {/* Next Scheduled Run */}

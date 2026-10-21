@@ -1,13 +1,13 @@
 from uuid import UUID
 from typing import List, Optional
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.responses import success_response
 from app.core.security import OPERATOR_ROLES, VIEWER_ROLES, Principal, require_roles
-from app.db.session import SessionLocal
+from app.db.session import get_db
 from app.schemas.api import ApiResponse
 from app.services.audit import record_audit_event
 from app.services.schedule_service import ScheduleService
@@ -17,18 +17,10 @@ from app.services.schedule_audit import ScheduleAuditService
 router = APIRouter()
 
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
 # Schemas
 class ScheduleConfig(BaseModel):
     schedule_type: str = Field(..., pattern="^(INTERVAL|CRON)$")
-    interval_seconds: Optional[int] = Field(None, ge=60)
+    interval_seconds: Optional[int] = Field(None, ge=60, le=2_147_483_647)
     cron_expression: Optional[str] = None
     timezone: str = "UTC"
 
@@ -52,6 +44,18 @@ class AuditLogResponse(BaseModel):
 
 
 # Endpoints
+@router.post("/preview", response_model=List[datetime])
+def preview_schedule(
+    config: ScheduleConfig,
+    _: Principal = Depends(require_roles(*VIEWER_ROLES)),
+):
+    """Preview five upcoming executions without saving a schedule."""
+    try:
+        return ScheduleService.preview_schedule(**config.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/{sync_def_id}/enable", response_model=ScheduleResponse)
 def enable_schedule(
     sync_def_id: UUID,
@@ -136,7 +140,7 @@ def delete_schedule(
 def get_schedule_audit(
     sync_def_id: UUID,
     request: Request,
-    limit: int = 50,
+    limit: int = Query(50, ge=1, le=200),
     _: Principal = Depends(require_roles(*VIEWER_ROLES)),
     db: Session = Depends(get_db)
 ):

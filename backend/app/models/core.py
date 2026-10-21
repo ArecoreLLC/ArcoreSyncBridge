@@ -307,7 +307,7 @@ class SyncRun(Base):
 
 class CeleryPeriodicTask(Base):
     """
-    Celery Beat schedule storage (compatible with celery-sqlalchemy-scheduler)
+    Application schedule metadata used by the periodic dispatch task
     """
     __tablename__ = "celery_periodic_tasks"
 

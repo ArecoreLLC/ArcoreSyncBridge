@@ -3,20 +3,12 @@ from celery import Celery
 
 # Use env vars or defaults
 redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-database_url = os.environ.get("DATABASE_URL")
-
-if not database_url:
-    db_user = os.environ.get("POSTGRES_USER", "change_me")
-    db_password = os.environ.get("POSTGRES_PASSWORD", "change_me")
-    db_host = os.environ.get("POSTGRES_HOST", "localhost")
-    db_port = os.environ.get("POSTGRES_PORT", "5432")
-    db_name = os.environ.get("POSTGRES_DB", "arcore_syncbridge")
-    database_url = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
 
 celery_app = Celery(
     "arcore_worker",
     broker=redis_url,
-    backend=redis_url
+    backend=redis_url,
+    include=["app.worker.tasks"],
 )
 
 celery_app.conf.update(
@@ -34,10 +26,14 @@ celery_app.conf.update(
         "app.worker.tasks.reconcile_single_sync": {"queue": "default"},
     },
     # Celery Beat Configuration
-    beat_scheduler="celery_sqlalchemy_scheduler.schedulers:DatabaseScheduler",
-    beat_dburi=database_url,
-    beat_schedule_filename="/tmp/celerybeat-schedule",  # Fallback for file-based scheduler
+    beat_scheduler="celery.beat:PersistentScheduler",
+    beat_schedule_filename="/tmp/celerybeat-schedule",
     beat_schedule={
+        "dispatch-sync-schedules": {
+            "task": "app.worker.tasks.dispatch_sync_schedules",
+            "schedule": 15.0,
+            "options": {"queue": "default"},
+        },
         "reconcile-drift-metrics-every-30-minutes": {
             "task": "app.worker.tasks.reconcile_drift_metrics",
             "schedule": 1800.0,  # 30 minutes in seconds
